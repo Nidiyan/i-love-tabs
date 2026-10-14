@@ -3,11 +3,15 @@ Translate a video of a guitarist to a set of tabs.
 
 ## Run locally
 
-Requires Node.js 22+, Python 3.10+ with pip, and FFmpeg on your PATH.
+Use Node.js **24.22.0 or a newer 24.x patch** (the latest LTS line) and
+Python **3.15.0** with pip, plus FFmpeg on your PATH. `.nvmrc` and
+`.python-version` record the selected runtimes for version managers.
+NumPy is pinned to a release with Python 3.15 support. Node.js 26 is still
+in its Current phase, so this project targets Node.js 24 LTS instead.
 On Debian/Ubuntu, install FFmpeg with `sudo apt-get install ffmpeg`.
 
 ```sh
-python3 -m venv .venv
+python3.15 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 npm start
