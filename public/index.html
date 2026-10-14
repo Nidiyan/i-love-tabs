@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>I love tabs — Guitar video to tablature</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header><span class="eyebrow">FROM RECORDING TO RIFF</span><h1>I love tabs<span>♪</span></h1>
+      <p>Turn a guitar recording into a starting point for your next practice session.</p></header>
+    <section class="card">
+      <h2>What are you learning?</h2>
+      <p>Paste a direct HTTPS video or audio file link. We’ll listen for notes, estimate the key and tuning, and suggest guitar tabs.</p>
+      <form id="transcribe">
+        <label for="url">Video or audio URL</label>
+        <input id="url" name="url" type="url" placeholder="https://example.com/guitar.mp4" required maxlength="2048">
+        <label for="tuning">Tuning (low string → high string)</label>
+        <select id="tuning" name="tuning">
+          <option value="auto">Estimate tuning — confirm before playing</option>
+          <option value="standard">Standard — E A D G B E</option>
+          <option value="drop-d">Drop D — D A D G B E</option>
+          <option value="half-step-down">Half-step down — D# G# C# F# A# D#</option>
+          <option value="dadgad">DADGAD — D A D G A D</option>
+          <option value="open-g">Open G — D G D G B D</option>
+        </select>
+        <button id="submit" type="submit">Generate tabs <span aria-hidden="true">→</span></button>
+      </form>
+      <p class="hint">Best with a clean, single-note guitar melody. Up to 40 MB; the first 60 seconds are analyzed. YouTube and other streaming-page URLs are not supported.</p>
+    </section>
+    <p id="status" role="status" aria-live="polite"></p>
+    <section id="results" class="card" hidden>
+      <h2>Your transcription</h2>
+      <div class="summary"><div><h3>Tuning estimate</h3><p id="result-tuning"></p></div><div><h3>Key estimate</h3><p id="result-key"></p></div></div>
+      <ul id="warnings" class="hint"></ul>
+      <h3>Suggested tablature</h3>
+      <pre id="tabs" tabindex="0" aria-label="Guitar tablature"></pre>
+      <button id="download" type="button">Download tabs</button>
+      <details><summary>Timed notes &amp; fret positions</summary>
+        <div class="table-wrap"><table><thead><tr><th>Time (s)</th><th>Length (s)</th><th>Note</th><th>String</th><th>Fret</th></tr></thead><tbody id="notes"></tbody></table></div>
+      </details>
+    </section>
+    <footer>Listen first. Check the tuning. Make it your own.<br>Use recordings you own or have permission to process.</footer>
+  </main>
+</body>
+</html>
