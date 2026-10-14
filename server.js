@@ -32,11 +32,26 @@ function validateUrl(value) {
   return url;
 }
 
-async function publicAddress(hostname, resolve = dns.resolve4) {
+async function publicAddress(hostname, resolve = dns.resolve4, timeout = 5000) {
   if (net.isIP(hostname) === 6 || hostname.includes(':')) {
     throw new Error('Only public IPv4 media hosts are supported.');
   }
-  const addresses = net.isIP(hostname) === 4 ? [hostname] : await resolve(hostname);
+  let addresses;
+  if (net.isIP(hostname) === 4) {
+    addresses = [hostname];
+  } else {
+    let timer;
+    try {
+      addresses = await Promise.race([
+        resolve(hostname),
+        new Promise((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('Media host lookup timed out.')), timeout);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   if (!addresses.length || addresses.some(address =>
     net.isIP(address) !== 4 || blocked.check(address))) {
     throw new Error('The URL must point to a public internet address.');
@@ -47,7 +62,9 @@ async function publicAddress(hostname, resolve = dns.resolve4) {
 async function download(value, destination, redirects = 0, deadline = Date.now() + 45000) {
   if (redirects > 4) throw new Error('Too many media redirects.');
   const url = validateUrl(value);
-  const address = await publicAddress(url.hostname);
+  const lookupTime = deadline - Date.now();
+  if (lookupTime <= 0) throw new Error('Media download timed out.');
+  const address = await publicAddress(url.hostname, dns.resolve4, Math.min(5000, lookupTime));
   const remaining = deadline - Date.now();
   if (remaining <= 0) throw new Error('Media download timed out.');
   await new Promise((resolve, reject) => {

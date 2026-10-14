@@ -24,6 +24,14 @@ test('reject internal, reserved, IPv6 and mixed public/private DNS addresses', a
   assert.equal(await publicAddress('example.com', async () => ['8.8.8.8']), '8.8.8.8');
 });
 
+test('slow DNS resolution and expired download deadlines fail promptly', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pending = publicAddress('example.com', () => new Promise(() => {}), 25);
+  t.mock.timers.tick(25);
+  await assert.rejects(pending, /lookup timed out/);
+  await assert.rejects(download('https://example.com/a', '/tmp/unused-media', 0, Date.now() - 1), /download timed out/);
+});
+
 test('download pins validated DNS, bounds content, and revalidates redirects', async t => {
   const directory = await fs.mkdtemp(path.join(tmpdir(), 'tabs-test-'));
   t.mock.method(dns, 'resolve4', async () => ['8.8.8.8']);
