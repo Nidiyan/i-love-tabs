@@ -8,5 +8,7 @@
 !public/**
 !tests/
 !tests/**
+!scripts/
+!scripts/bootstrap-azure.sh
 **/__pycache__/
 **/*.pyc

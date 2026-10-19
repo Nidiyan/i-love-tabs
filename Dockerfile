@@ -31,7 +31,13 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "server.js"]
 
 FROM runtime AS test
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends jq \
+    && rm -rf /var/lib/apt/lists/*
+USER 10001:10001
 COPY tests ./tests
+COPY scripts/bootstrap-azure.sh ./scripts/bootstrap-azure.sh
 ENV REQUIRE_MEDIA_TESTS=1
 RUN npm test
 

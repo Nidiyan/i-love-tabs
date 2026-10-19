@@ -15,9 +15,13 @@ param registryName string
 @description('Object ID of the GitHub deployment service principal (not its client ID).')
 param deployPrincipalId string
 
+@description('Optional tags, including ownership marker used by the interactive bootstrap.')
+param resourceTags object = {}
+
 resource group 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: '${appName}-rg'
   location: location
+  tags: resourceTags
 }
 
 module resources './resources.bicep' = {

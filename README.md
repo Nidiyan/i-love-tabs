@@ -113,6 +113,71 @@ This is a **one-time bootstrap followed by image-only deployments** on pushes
 to `main` (not `master`). PRs targeting `main` run checks without Azure access.
 No database or persistent media volume is needed.
 
+### Automated bootstrap (recommended)
+
+Use **Bash on Linux, macOS, or WSL**, with Azure CLI/Bicep, Docker (running),
+GitHub CLI, jq, curl, and Git installed. You need Azure resource/role-assignment
+permissions and Entra app-registration permissions, plus GitHub repository admin
+access. GitHub environment protection must be available for your repository/plan.
+Run from a trusted checkout containing the deployment files:
+
+```sh
+az login
+gh auth login
+REPO_ROOT=$(git rev-parse --show-toplevel)
+SUBSCRIPTION_ID='<your-subscription-uuid>' \
+  bash "$REPO_ROOT/scripts/bootstrap-azure.sh" --yes
+```
+
+This creates **billable resources**. `--yes` acknowledges that and changes to the
+dedicated `azure-testing` GitHub environment. Optional environment inputs:
+
+| Input | Default |
+| --- | --- |
+| `LOCATION` | `eastus` |
+| `APP_NAME` | `i-love-tabs` |
+| `REGISTRY_NAME` | Stable generated name derived from subscription/repo/app |
+| `GITHUB_REPO` | `Nidiyan/i-love-tabs` (set this when using a fork) |
+| `TESTER_OBJECT_ID` | Signed-in Azure user's tenant-local object ID |
+
+The script generates/reuses the two Entra registrations, OIDC federation, Azure
+resources and managed identity roles; builds/tests/pushes a Linux amd64 image;
+deploys the app; checks tenant and owner-only authentication; and sets **all eight**
+GitHub environment variables. It preserves existing required reviewers/wait timer
+while replacing environment branch/tag policies with **only the `main` branch**.
+No deployment client secret is created. The script never merges code or pushes
+Git commits; merging the workflow to `main` enables subsequent deployments.
+
+The website sign-in secret goes through mode-600 files in a mode-700 temporary
+directory, is removed on exit, and is stored as a secure Azure app secret.
+Do not run with shell tracing, publish CLI debug logs, or provide secrets as input.
+The resource URLs/IDs and eight GitHub variables are configuration, not passwords.
+
+Initial ingress stays internal until authentication and GitHub configuration
+succeed. If a later step or the anonymous-login check fails after public ingress
+was attempted, the script tries to restore internal ingress and warns if rollback
+fails. **Do not ignore that warning.** A successful redirect does not prove browser
+login or authorization: after setup, sign in as yourself, then verify another
+tenant account is denied. The public URL is reachable, but only your selected
+user is authorized; Azure administrators retain administrative access.
+
+**Reruns:** use the same subscription, repository, app, and registry inputs.
+Registrations have stable unique names and are reused; the foundation is
+redeployed. The script refuses preexisting resource groups without its ownership
+tag, so choose a different `APP_NAME` if you previously followed the manual
+instructions below. Do not point it at shared app registrations or resources.
+Each run appends a new website login credential, deploys it, and deletes only
+older credentials labeled `tabs-bootstrap-login` after a successful smoke check.
+Other credentials are preserved. A failed run may leave a generated credential
+or partial resources in Azure; rerun after fixing permissions/quota/name conflicts.
+Never automatically delete resources on an error. Review app credentials in Entra
+if abandoning a failed setup, and remove the dedicated resource group/registrations
+when finished. New identities/roles may need time to propagate before a rerun.
+The login secret expires in one year; rerun before expiry or rotate it manually.
+The script needs public Azure cloud endpoints; sovereign clouds are not supported.
+
+For troubleshooting or manual setup, the equivalent steps follow.
+
 ### 1. Prerequisites and deployment identity
 
 You need an Azure subscription, current Azure CLI with Bicep and the Container
@@ -170,7 +235,7 @@ Do not use the GitHub deployment identity as a tester:
 
 ```sh
 ENTRA_CLIENT_ID=$(az ad app create --display-name "$APP_NAME-testers" \
-  --sign-in-audience AzureADMyOrg --web-enable-id-token-issuance true --query appId -o tsv)
+  --sign-in-audience AzureADMyOrg --enable-id-token-issuance true --query appId -o tsv)
 az ad sp create --id "$ENTRA_CLIENT_ID" --output none
 ENTRA_CLIENT_SECRET=$(az ad app credential reset --id "$ENTRA_CLIENT_ID" \
   --append --display-name container-app-login --years 1 --query password -o tsv)
