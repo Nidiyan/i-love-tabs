@@ -1,0 +1,14 @@
+*
+!Dockerfile
+!package.json
+!requirements.txt
+!server.js
+!analyze.py
+!public/
+!public/**
+!tests/
+!tests/**
+!scripts/
+!scripts/bootstrap-azure.sh
+**/__pycache__/
+**/*.pyc
