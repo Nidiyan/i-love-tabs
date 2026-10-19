@@ -80,3 +80,215 @@ Returns `tuning`, `key`, `tabs`, `notes`, `duration`, and `warnings`, or an
 Tuning values: `auto`, `standard`, `drop-d`, `half-step-down`, `dadgad`, `open-g`.
 In the timed notes, string **1 is the lowest-pitched string** and string 6 the
 highest; the ASCII tab displays the highest string first.
+
+## Container
+
+The multi-stage Dockerfile packages the selected Node/Python versions, NumPy,
+and FFmpeg. Base images are digest-pinned; update those digests when updating
+runtime versions or applying base-image security updates. The `test` target runs
+the tests, including an offline MP4 → download stream → FFmpeg → Python → API
+integration test. Only the HTTPS response is substituted; extraction, analysis,
+and temporary-file cleanup are real. The `production` target excludes tests.
+
+```sh
+REPO_ROOT=$(git rev-parse --show-toplevel)
+docker build --target test -t i-love-tabs:test "$REPO_ROOT"
+docker build --target production -t i-love-tabs:local "$REPO_ROOT"
+docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,size=128m \
+  --cap-drop ALL --security-opt no-new-privileges --cpus 1 --memory 2g \
+  -p 127.0.0.1:3000:3000 i-love-tabs:local
+```
+
+The image runs as UID/GID 10001, binds `0.0.0.0:3000`, and uses its Python
+virtual environment. Do not override its user to root. Azure applies the
+template's 1 CPU / 2 GiB container limits; the Docker command additionally tests
+read-only/capability restrictions that are not configurable through the selected
+Container Apps API. This is a resource-bounded testing container, **not a fully
+isolated hostile-media sandbox**. Use trusted recordings and restricted testers.
+
+## Deploy to Azure Container Apps
+
+Architecture: GitHub Actions → Azure Container Registry (ACR) → Container Apps.
+This is a **one-time bootstrap followed by image-only deployments** on pushes
+to `main` (not `master`). PRs targeting `main` run checks without Azure access.
+No database or persistent media volume is needed.
+
+### 1. Prerequisites and deployment identity
+
+You need an Azure subscription, current Azure CLI with Bicep and the Container
+Apps extension, Docker, permission to create Entra app registrations, and
+subscription permissions to create resources and role assignments (for example,
+Owner). The GitHub workflow subsequently uses only ACR-scoped `AcrPush` and
+Container-App-scoped `Contributor`, not subscription-wide Contributor.
+
+Run these interactively; do not enable shell tracing or paste secrets into GitHub:
+
+```sh
+az login
+az extension add --name containerapp --upgrade
+az bicep install
+REPO_ROOT=$(git rev-parse --show-toplevel)
+SUBSCRIPTION_ID='<your-subscription-id>'
+LOCATION='eastus'
+APP_NAME='i-love-tabs'
+REGISTRY_NAME='<globally-unique-lowercase-alphanumeric-name>'
+az account set --subscription "$SUBSCRIPTION_ID"
+TENANT_ID=$(az account show --query tenantId -o tsv)
+for provider in Microsoft.App Microsoft.ContainerRegistry Microsoft.OperationalInsights Microsoft.ManagedIdentity; do
+  az provider register --namespace "$provider" --wait
+done
+DEPLOY_CLIENT_ID=$(az ad app create --display-name "$APP_NAME-github" --query appId -o tsv)
+DEPLOY_OBJECT_ID=$(az ad sp create --id "$DEPLOY_CLIENT_ID" --query id -o tsv)
+az ad app federated-credential create --id "$DEPLOY_CLIENT_ID" --parameters '{
+  "name": "github-azure-testing",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:Nidiyan/i-love-tabs:environment:azure-testing",
+  "audiences": ["api://AzureADTokenExchange"]
+}'
+az deployment sub create --name "$APP_NAME-foundation" --location "$LOCATION" \
+  --template-file "$REPO_ROOT/infra/main.bicep" \
+  --parameters location="$LOCATION" appName="$APP_NAME" registryName="$REGISTRY_NAME" \
+    deployPrincipalId="$DEPLOY_OBJECT_ID" --output none
+RG="$APP_NAME-rg"
+```
+
+The federation subject deliberately uses the **GitHub environment**, not a branch
+subject: the deployment job declares `environment: azure-testing`. For a fork,
+change the owner/repository in the subject. No deployment client secret is created.
+Re-use these app registrations/IDs on subsequent runs; do not create duplicates.
+Allow time for new role assignments to propagate.
+
+The foundation creates the resource group, Basic ACR (admin login disabled),
+a user-assigned pull identity with `AcrPull`, a Consumption environment, and a
+30-day Log Analytics workspace. ACR and logs have costs even without requests;
+the app keeps one replica warm. Configure a subscription budget before testing.
+
+### 2. Bootstrap the image and restricted sign-in
+
+Create a **different**, single-tenant Entra web application for browser sign-in.
+Do not use the GitHub deployment identity as a tester:
+
+```sh
+ENTRA_CLIENT_ID=$(az ad app create --display-name "$APP_NAME-testers" \
+  --sign-in-audience AzureADMyOrg --web-enable-id-token-issuance true --query appId -o tsv)
+az ad sp create --id "$ENTRA_CLIENT_ID" --output none
+ENTRA_CLIENT_SECRET=$(az ad app credential reset --id "$ENTRA_CLIENT_ID" \
+  --append --display-name container-app-login --years 1 --query password -o tsv)
+TESTER_OBJECT_IDS_JSON='["<your-tenant-local-user-object-id>"]'
+LOGIN_SERVER=$(az acr show --name "$REGISTRY_NAME" --query loginServer -o tsv)
+IMAGE="$LOGIN_SERVER/i-love-tabs:$(git rev-parse HEAD)"
+az acr login --name "$REGISTRY_NAME"
+docker build --target test -t i-love-tabs:test "$REPO_ROOT"
+docker build --target production -t "$IMAGE" "$REPO_ROOT"
+docker push "$IMAGE"
+IMAGE_DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE")
+az deployment group create --resource-group "$RG" --name "$APP_NAME-app" \
+  --template-file "$REPO_ROOT/infra/app.bicep" \
+  --parameters appName="$APP_NAME" registryName="$REGISTRY_NAME" image="$IMAGE_DIGEST" \
+    entraClientId="$ENTRA_CLIENT_ID" entraClientSecret="$ENTRA_CLIENT_SECRET" \
+    testerObjectIds="$TESTER_OBJECT_IDS_JSON" deployPrincipalId="$DEPLOY_OBJECT_ID" \
+  --output none
+unset ENTRA_CLIENT_SECRET
+```
+
+Use Entra **user object IDs**, not emails, subscription IDs, or client IDs.
+For your own ID, `az ad signed-in-user show --query id -o tsv` may help; tenant
+directory permissions may be needed for other users. The nonempty identities-only
+allowlist permits only those users, including tenant-local guest IDs if applicable
+(up to 12 users to stay below the provider's identity-list size limit).
+
+The sign-in secret is a `@secure()` Bicep parameter stored as a Container Apps
+secret and referenced by built-in authentication. It is **not** a GitHub secret
+or a password for deployment. Rotate it before expiry using Entra and Container
+Apps secret management; never commit it or place it in a checked-in parameter file.
+
+Initial ingress is **internal**, so creating the parent app does not briefly expose
+an unauthenticated public endpoint before the auth child resource exists. Read
+back the auth configuration before enabling external ingress:
+
+```sh
+APP_ID=$(az containerapp show -g "$RG" -n "$APP_NAME" --query id -o tsv)
+az rest --method get --url "$APP_ID/authConfigs/current?api-version=2024-03-01" \
+  --query properties
+```
+
+Confirm platform and Entra are enabled, the issuer is your tenant's `/v2.0`
+endpoint, the unauthenticated action is `RedirectToLoginPage`, there are no
+excluded paths, and `allowedPrincipals.identities` is **exactly** your tester
+allowlist. Then enable HTTPS ingress and register the resulting public callback:
+
+```sh
+az containerapp ingress enable -g "$RG" -n "$APP_NAME" \
+  --type external --target-port 3000 --transport auto --output none
+FQDN=$(az containerapp show -g "$RG" -n "$APP_NAME" \
+  --query properties.configuration.ingress.fqdn -o tsv)
+az ad app update --id "$ENTRA_CLIENT_ID" \
+  --web-redirect-uris "https://$FQDN/.auth/login/aad/callback"
+curl --silent --show-error --dump-header - --output /dev/null "https://$FQDN/"
+```
+
+Expect a **302 redirect to `/.auth/login/aad`**, not an anonymous 200. In separate
+browser sessions, verify a listed tester can access the app and an unlisted tenant
+user is denied (403). This manual check is essential; a redirect alone does not
+verify successful login or the allowlist. If access is unexpected, immediately
+switch ingress back to internal with `az containerapp ingress enable --type internal`.
+Reapplying the app template intentionally resets ingress to internal; repeat these
+verification steps before enabling it again. Do not share this Container Apps
+environment with untrusted workloads; internal ingress is not an authorization wall.
+
+### 3. Configure GitHub and merge to main
+
+Create a GitHub environment named **`azure-testing`**. Under its deployment branch
+rules, allow **only `main`**; optionally require reviewer approval. Protect `main`
+with pull requests and the `test` job as a required status check. Configure these
+**environment variables** (IDs/names are not credentials):
+
+| Variable | Value from bootstrap |
+| --- | --- |
+| `AZURE_CLIENT_ID` | `DEPLOY_CLIENT_ID` |
+| `AZURE_TENANT_ID` | `TENANT_ID` |
+| `AZURE_SUBSCRIPTION_ID` | `SUBSCRIPTION_ID` |
+| `AZURE_RESOURCE_GROUP` | `RG` |
+| `AZURE_CONTAINER_APP` | `APP_NAME` |
+| `AZURE_REGISTRY_NAME` | `REGISTRY_NAME` |
+| `AZURE_ENTRA_CLIENT_ID` | `ENTRA_CLIENT_ID` |
+| `AZURE_TESTER_OBJECT_IDS_JSON` | Exact tester JSON array |
+
+After merging, the workflow:
+
+1. Compiles the Bicep templates and runs all tests inside the pinned runtimes,
+   including the FFmpeg/Python pipeline; smoke-tests the production container.
+2. On pushes to `main` **only**, obtains an Azure token via OIDC, checks that the
+   tenant/provider/tester allowlist have not drifted, and rebuilds/tests the image.
+3. Pushes a commit-SHA-tagged image, then deploys its immutable **digest**.
+4. Waits for that specific revision to be active, provisioned, and healthy, then
+   verifies that the public endpoint redirects anonymous visitors to Entra login.
+
+PR and manually dispatched runs are **checks only**. Deployments are serialized.
+The update changes only the image: it does not weaken auth, change ingress, or
+replace secrets. The pull identity retrieves the image without registry passwords.
+The readiness check plus anonymous redirect check is not an authenticated-user
+transcription test; run that manually after first deployment and auth changes.
+
+### Operations and limitations
+
+- Inspect startup/system logs with `az containerapp logs show -g "$RG" -n "$APP_NAME" --type system`
+  and application output with `--type console`. Logging must not include submitted
+  media URLs (which can contain signed credentials), tokens, or secret values.
+- The app's existing one-active-transcription guard returns 429 while busy.
+  `minReplicas: 1`, `maxReplicas: 1`, and single-revision mode avoid steady-state
+  scale-out, but old/new revisions can briefly overlap during rollout. There is
+  no distributed queue or per-user quota. Add rate limiting before broadening access.
+- Downloads, conversion, and analysis can take about 105 seconds in total.
+  Any additional proxy must permit that duration; future longer processing needs
+  asynchronous jobs rather than increasingly long HTTP requests.
+- CPU/memory limits apply to Node and its child processes together. This setup
+  is for a small, allowlisted test deployment, not an unrestricted media service.
+- To roll back, use `az containerapp update -g "$RG" -n "$APP_NAME" --image '<previous-image-digest>'`
+  and repeat readiness/login checks. Keep previous image digests in ACR.
+- To stop all resource charges, delete the dedicated resource group with
+  `az group delete --name "$RG"` after confirming it holds only this app. Also
+  delete the two dedicated Entra registrations/federated credential and remove
+  GitHub environment variables when retiring the deployment.
+- Azure deployment does not add streaming-site support, source separation,
+  chords, or visual fingering analysis. Start with short, clean single-note recordings.

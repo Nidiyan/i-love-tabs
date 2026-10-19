@@ -1,0 +1,12 @@
+*
+!Dockerfile
+!package.json
+!requirements.txt
+!server.js
+!analyze.py
+!public/
+!public/**
+!tests/
+!tests/**
+**/__pycache__/
+**/*.pyc
