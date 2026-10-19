@@ -17,6 +17,28 @@ def melody(pitches, rate=16000):
 
 
 class AnalysisTests(unittest.TestCase):
+    def test_sustained_notes_keep_full_duration_including_partial_final_hop(self):
+        rate = 16000
+        for length in [1600, 16000, 16213]:
+            with self.subTest(length=length):
+                time = np.arange(length) / rate
+                notes = detect_notes(0.4 * np.sin(2 * np.pi * 110 * time), rate)
+                self.assertEqual(len(notes), 1)
+                self.assertEqual(notes[0]["midi"], 45)
+                self.assertAlmostEqual(notes[0]["start"], 0, delta=0.02)
+                self.assertAlmostEqual(notes[0]["duration"], length / rate, delta=0.021)
+                self.assertLessEqual(notes[0]["start"] + notes[0]["duration"],
+                                     round(length / rate, 3))
+
+    def test_note_boundaries_follow_audio_not_window_left_edges(self):
+        rate = 16000
+        tone = 0.4 * np.sin(2 * np.pi * 110 * np.arange(rate // 2) / rate)
+        samples = np.concatenate([np.zeros(rate // 4), tone, np.zeros(rate // 4)])
+        notes = detect_notes(samples, rate)
+        self.assertEqual(len(notes), 1)
+        self.assertAlmostEqual(notes[0]["start"], 0.25, delta=0.02)
+        self.assertAlmostEqual(notes[0]["start"] + notes[0]["duration"], 0.75, delta=0.02)
+
     def test_detect_guitar_notes_with_harmonics_and_silence(self):
         pitches = [38, 40, 45, 50, 55, 59, 64, 72]
         notes = detect_notes(melody(pitches), 16000)

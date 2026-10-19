@@ -27,10 +27,15 @@ def detect_notes(samples, rate):
     peak = float(np.max(np.abs(samples))) if len(samples) else 0
     if peak < 0.001:
         return []
-    for start in range(0, len(samples) - window + 1, hop):
-        frame = samples[start:start + window].copy()
+    # Each frame describes one hop-sized time cell, using context on both sides.
+    # Padding retains the first/last cells without extending reported audio time.
+    padding = window // 2 - hop // 2
+    padded = np.pad(samples, (padding, window))
+    for start in range(0, len(samples), hop):
+        frame = padded[start:start + window].copy()
         frame -= np.mean(frame)
-        rms = float(np.sqrt(np.mean(frame ** 2)))
+        cell = samples[start:min(start + hop, len(samples))]
+        rms = float(np.sqrt(np.mean(cell ** 2)))
         midi = None
         if rms > max(0.004, peak * 0.025):
             spectrum = np.fft.rfft(frame, n=4096)
@@ -65,7 +70,8 @@ def detect_notes(samples, rate):
         end = index + 1
         while end < len(frames) and frames[end][1] == midi:
             end += 1
-        duration = (end - index) * hop / rate
+        stop = min(end * hop, len(samples)) / rate
+        duration = stop - start
         if midi is not None and duration >= 0.08:
             notes.append({"midi": midi, "start": round(start, 3),
                           "duration": round(duration, 3)})
